@@ -154,8 +154,16 @@ func (cmd *branchSplitFilesCmd) Run(
 		}
 	}
 
+	// Compute the actual merge-base with the base branch.
+	// We use the merge-base rather than the stored BaseHash because
+	// the stored hash may be outdated if the branch has been modified.
+	mergeBase, err := repo.MergeBase(ctx, branchInfo.Base, targetBranch)
+	if err != nil {
+		return fmt.Errorf("compute merge-base: %w", err)
+	}
+
 	// Get all changed files between branch and its base.
-	files, err := cmd.getChangedFiles(ctx, repo, branchInfo.BaseHash, branchInfo.Head)
+	files, err := cmd.getChangedFiles(ctx, repo, mergeBase, branchInfo.Head)
 	if err != nil {
 		return fmt.Errorf("get changed files: %w", err)
 	}
