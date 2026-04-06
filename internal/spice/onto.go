@@ -124,6 +124,13 @@ func (s *Service) BranchOnto(ctx context.Context, req *BranchOntoRequest) error 
 	}
 
 	if !req.SkipRebase {
+		// Regardless of the configured restack method,
+		// "onto" operations always use rebase.
+		// A merge cannot transplant commits from one base to another:
+		// it would bring the new base into the branch
+		// but the branch would still contain history from the old base.
+		// Only 'git rebase --onto' can correctly isolate and replay
+		// the commits unique to the branch onto a different base.
 		if err := s.wt.Rebase(ctx, git.RebaseRequest{
 			Branch:    req.Branch,
 			Upstream:  string(fromHash),

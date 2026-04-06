@@ -1,6 +1,7 @@
 package git_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -362,6 +363,276 @@ func TestRepository_DiffTree(t *testing.T) {
 			{Status: "A", Path: "e.txt"},
 		}
 		assert.ElementsMatch(t, expected, files)
+	})
+
+	t.Run("RenamedFile", func(t *testing.T) {
+		t.Parallel()
+
+		fixture, err := gittest.LoadFixtureScript([]byte(text.Dedent(`
+			as 'Test <test@example.com>'
+			at '2025-06-21T10:00:00Z'
+
+			git init
+			git add old-name.txt
+			git add unchanged.txt
+			git commit -m 'Initial commit'
+
+			git mv old-name.txt new-name.txt
+			git commit -m 'Rename file'
+
+			-- old-name.txt --
+			some content
+			-- unchanged.txt --
+			unchanged
+		`)))
+		require.NoError(t, err)
+		t.Cleanup(fixture.Cleanup)
+
+		repo, err := git.Open(t.Context(), fixture.Dir(), git.OpenOptions{
+			Log: silogtest.New(t),
+		})
+		require.NoError(t, err)
+
+		files, err := sliceutil.CollectErr(
+			repo.DiffTree(t.Context(), "HEAD~1", "HEAD"),
+		)
+		require.NoError(t, err)
+
+		require.Len(t, files, 1)
+		assert.Equal(t, "new-name.txt", files[0].Path)
+		assert.Equal(t, "old-name.txt", files[0].OldPath)
+		assert.True(t,
+			strings.HasPrefix(files[0].Status, "R"),
+			"status should start with R, got %q",
+			files[0].Status,
+		)
+	})
+
+	t.Run("RenamedAndModified", func(t *testing.T) {
+		t.Parallel()
+
+		fixture, err := gittest.LoadFixtureScript([]byte(text.Dedent(`
+			as 'Test <test@example.com>'
+			at '2025-06-21T10:00:00Z'
+
+			git init
+			git add original.txt
+			git add keep.txt
+			git commit -m 'Initial commit'
+
+			git mv original.txt moved.txt
+			git add new-file.txt
+			git commit -m 'Rename and add'
+
+			-- original.txt --
+			file content here
+			-- keep.txt --
+			unchanged
+			-- new-file.txt --
+			brand new
+		`)))
+		require.NoError(t, err)
+		t.Cleanup(fixture.Cleanup)
+
+		repo, err := git.Open(t.Context(), fixture.Dir(), git.OpenOptions{
+			Log: silogtest.New(t),
+		})
+		require.NoError(t, err)
+
+		files, err := sliceutil.CollectErr(
+			repo.DiffTree(t.Context(), "HEAD~1", "HEAD"),
+		)
+		require.NoError(t, err)
+
+		// Should have a rename and an add.
+		require.Len(t, files, 2)
+
+		var renamed, added git.FileStatus
+		for _, f := range files {
+			if strings.HasPrefix(f.Status, "R") {
+				renamed = f
+			} else {
+				added = f
+			}
+		}
+
+		assert.Equal(t, "moved.txt", renamed.Path)
+		assert.Equal(t, "original.txt", renamed.OldPath)
+
+		assert.Equal(t, "A", added.Status)
+		assert.Equal(t, "new-file.txt", added.Path)
+		assert.Empty(t, added.OldPath)
+	})
+}
+
+func TestRepository_DiffText(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Basic", func(t *testing.T) {
+		t.Parallel()
+
+		fixture, err := gittest.LoadFixtureScript([]byte(text.Dedent(`
+			as 'Test <test@example.com>'
+			at '2025-06-21T10:00:00Z'
+
+			git init
+			git add file.txt
+			git commit -m 'Initial commit'
+
+			git checkout -b feature
+			cp $WORK/extra/modified.txt file.txt
+			git add file.txt
+			git commit -m 'Modify file'
+
+			-- file.txt --
+			original content
+			-- extra/modified.txt --
+			modified content
+		`)))
+		require.NoError(t, err)
+		t.Cleanup(fixture.Cleanup)
+
+		repo, err := git.Open(t.Context(), fixture.Dir(), git.OpenOptions{
+			Log: silogtest.New(t),
+		})
+		require.NoError(t, err)
+
+		diff, err := repo.DiffText(t.Context(), "main", "feature")
+		require.NoError(t, err)
+
+		assert.Contains(t, diff, "diff --git")
+		assert.Contains(t, diff, "file.txt")
+		assert.Contains(t, diff, "-original content")
+		assert.Contains(t, diff, "+modified content")
+	})
+
+	t.Run("NoChanges", func(t *testing.T) {
+		t.Parallel()
+
+		fixture, err := gittest.LoadFixtureScript([]byte(text.Dedent(`
+			as 'Test <test@example.com>'
+			at '2025-06-21T10:00:00Z'
+
+			git init
+			git add file.txt
+			git commit -m 'Initial commit'
+
+			-- file.txt --
+			content
+		`)))
+		require.NoError(t, err)
+		t.Cleanup(fixture.Cleanup)
+
+		repo, err := git.Open(t.Context(), fixture.Dir(), git.OpenOptions{
+			Log: silogtest.New(t),
+		})
+		require.NoError(t, err)
+
+		diff, err := repo.DiffText(t.Context(), "HEAD", "HEAD")
+		require.NoError(t, err)
+		assert.Empty(t, diff)
+	})
+}
+
+func TestRepository_DiffTextDirect(t *testing.T) {
+	t.Parallel()
+
+	fixture, err := gittest.LoadFixtureScript([]byte(text.Dedent(`
+		as 'Test <test@example.com>'
+		at '2025-06-21T10:00:00Z'
+
+		git init
+		git add file.txt
+		git commit -m 'First commit'
+
+		cp $WORK/extra/v2.txt file.txt
+		git add file.txt
+		git commit -m 'Second commit'
+
+		-- file.txt --
+		v1
+		-- extra/v2.txt --
+		v2
+	`)))
+	require.NoError(t, err)
+	t.Cleanup(fixture.Cleanup)
+
+	repo, err := git.Open(t.Context(), fixture.Dir(), git.OpenOptions{
+		Log: silogtest.New(t),
+	})
+	require.NoError(t, err)
+
+	diff, err := repo.DiffTextDirect(t.Context(), "HEAD~1", "HEAD")
+	require.NoError(t, err)
+
+	assert.Contains(t, diff, "diff --git")
+	assert.Contains(t, diff, "-v1")
+	assert.Contains(t, diff, "+v2")
+}
+
+func TestWorktree_DiffStaged(t *testing.T) {
+	t.Parallel()
+
+	t.Run("StagedChanges", func(t *testing.T) {
+		t.Parallel()
+
+		fixture, err := gittest.LoadFixtureScript([]byte(text.Dedent(`
+			as 'Test <test@example.com>'
+			at '2025-06-21T10:00:00Z'
+
+			git init
+			git add file.txt
+			git commit -m 'Initial commit'
+
+			cp $WORK/extra/modified.txt file.txt
+			git add file.txt
+
+			-- file.txt --
+			original
+			-- extra/modified.txt --
+			modified
+		`)))
+		require.NoError(t, err)
+		t.Cleanup(fixture.Cleanup)
+
+		wt, err := git.OpenWorktree(t.Context(), fixture.Dir(), git.OpenOptions{
+			Log: silogtest.New(t),
+		})
+		require.NoError(t, err)
+
+		diff, err := wt.DiffStaged(t.Context())
+		require.NoError(t, err)
+
+		assert.Contains(t, diff, "diff --git")
+		assert.Contains(t, diff, "-original")
+		assert.Contains(t, diff, "+modified")
+	})
+
+	t.Run("NoStagedChanges", func(t *testing.T) {
+		t.Parallel()
+
+		fixture, err := gittest.LoadFixtureScript([]byte(text.Dedent(`
+			as 'Test <test@example.com>'
+			at '2025-06-21T10:00:00Z'
+
+			git init
+			git add file.txt
+			git commit -m 'Initial commit'
+
+			-- file.txt --
+			content
+		`)))
+		require.NoError(t, err)
+		t.Cleanup(fixture.Cleanup)
+
+		wt, err := git.OpenWorktree(t.Context(), fixture.Dir(), git.OpenOptions{
+			Log: silogtest.New(t),
+		})
+		require.NoError(t, err)
+
+		diff, err := wt.DiffStaged(t.Context())
+		require.NoError(t, err)
+		assert.Empty(t, diff)
 	})
 }
 

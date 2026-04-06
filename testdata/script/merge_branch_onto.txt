@@ -1,0 +1,56 @@
+# Branch onto always uses rebase, even when merge method is configured.
+# This is necessary to correctly transplant commits from one base to another:
+# a merge cannot remove old-base history from the branch.
+
+as 'Test <test@example.com>'
+at '2024-05-27T18:24:42Z'
+
+mkdir repo
+cd repo
+git init
+git add init.txt
+git commit -m 'Initial commit'
+gs repo init
+
+# Configure merge-based restacking
+git config spice.restack.method merge
+
+# Create two base branches
+git add feat1.txt
+gs bc feat1 -m feat1
+gs trunk
+git add feat2.txt
+gs bc feat2 -m feat2
+
+# Create a branch on top of feat1
+gs branch checkout feat1
+git add child.txt
+gs bc child -m child
+
+# Move child onto feat2.
+# Even though the restack method is merge, branch onto uses rebase
+# so that old-base (feat1) changes are not included in child.
+gs branch onto feat2
+
+# Verify no merge commit was created (linear history)
+git log --oneline --graph child
+! stdout 'Restack: merge'
+
+# Verify child is now on feat2
+gs log short
+stderr 'child'
+stderr 'feat2'
+
+# Verify feat1 changes are NOT present in child
+! exists feat1.txt
+exists feat2.txt
+exists child.txt
+
+-- repo/init.txt --
+initial
+-- repo/feat1.txt --
+feature 1
+-- repo/feat2.txt --
+feature 2
+-- repo/child.txt --
+child feature
